@@ -826,6 +826,29 @@ class TinyUSDZLoaderNative {
     mesh.set("materialId", rmesh.material_id);
     mesh.set("doubleSided", rmesh.doubleSided);
 
+    // Expose GeomSubset/material bindings for per-face materials.
+    {
+      emscripten::val subsets = emscripten::val::array();
+      int subsetIndex = 0;
+      for (const auto &kv : rmesh.material_subsetMap) {
+        const auto &subset = kv.second;
+
+        emscripten::val s = emscripten::val::object();
+        s.set("name", kv.first);
+        s.set("materialId", subset.material_id);
+        s.set("backfaceMaterialId", subset.backface_material_id);
+
+        const auto &indices = subset.indices();
+        if (!indices.empty()) {
+          s.set("indices", emscripten::typed_memory_view(indices.size(),
+                                                         indices.data()));
+        }
+
+        subsets.set(subsetIndex++, s);
+      }
+      mesh.set("geomSubsets", subsets);
+    }
+
     return mesh;
   }
 
@@ -1493,4 +1516,3 @@ EMSCRIPTEN_BINDINGS(tinyusdz_module) {
       .function("ok", &TinyUSDZComposerNative::loaded)
       .function("error", &TinyUSDZComposerNative::error);
 }
-

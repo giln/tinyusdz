@@ -409,43 +409,94 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         const geometry = this.convertUsdMeshToThreeMesh(mesh);
 
         const normalMtl = new THREE.MeshNormalMaterial();
-
-        let mtl = null;
-
-        //console.log("overrideMaterial:", options.overrideMaterial);
-        if (options.overrideMaterial) {
-            mtl = defaultMtl || normalMtl
-        } else {
-
-            const usdMaterial = usdScene.getMaterial(mesh.materialId);
-            //console.log("usdMaterial:", usdMaterial);
-         
-
-            const pbrMaterial = this.convertUsdMaterialToMeshPhysicalMaterial(usdMaterial, usdScene);
-            //console.log("pbrMaterial:", pbrMaterial);
-
+        const makeMaterial = (usdMat) => {
+            const mat = usdMat
+                ? this.convertUsdMaterialToMeshPhysicalMaterial(usdMat, usdScene)
+                : (defaultMtl || normalMtl);
 
             // Setting envmap is required for PBR materials to work correctly(e.g. clearcoat)
-            pbrMaterial.envMap = options.envMap || null;
-            pbrMaterial.envMapIntensity = options.envMapIntensity || 1.0;
+            mat.envMap = options.envMap || null;
+            if (Object.prototype.hasOwnProperty.call(options, 'envMapIntensity')) {
+                mat.envMapIntensity = options.envMapIntensity;
+            }
+            return mat;
+        };
 
-            //console.log("envmap:", options.envMap);
+        const subsets = mesh.geomSubsets || mesh.subsets || [];
+
+        if (subsets.length > 0 && !options.overrideMaterial) {
+            // Build multi-material mesh using GeomSubset bindings.
+            const materials = [];
+
+            // Build face start offsets from counts.
+            const faceCounts = mesh.faceVertexCounts || [];
+            const faceStarts = [];
+            let cursor = 0;
+            for (let i = 0; i < faceCounts.length; i++) {
+                faceStarts[i] = cursor;
+                cursor += faceCounts[i];
+            }
+
+            geometry.clearGroups();
+
+            subsets.forEach((subset, idx) => {
+                const matId = (subset.materialId !== undefined && subset.materialId >= 0)
+                    ? subset.materialId
+                    : (mesh.materialId >= 0 ? mesh.materialId : -1);
+                const usdMaterial = (matId >= 0) ? usdScene.getMaterial(matId) : null;
+                const threeMat = makeMaterial(usdMaterial);
+
+                // Sideness is determined by the mesh
+                if (Object.prototype.hasOwnProperty.call(geometry.userData, 'doubleSided')) {
+                    if (geometry.userData.doubleSided) {
+                        threeMat.side = THREE.DoubleSide;
+                    }
+                }
+
+                const materialIndex = materials.length;
+                materials.push(threeMat);
+
+                const faceIndices = subset.indices || [];
+                faceIndices.forEach((fi) => {
+                    const start = faceStarts[fi] || 0;
+                    const count = faceCounts[fi] || 0;
+                    if (count > 0) {
+                        geometry.addGroup(start, count, materialIndex);
+                    }
+                });
+            });
+
+            // Fallback: ensure at least one group exists.
+            if (geometry.groups.length === 0) {
+                geometry.addGroup(0, geometry.index ? geometry.index.count : geometry.attributes.position.count, 0);
+            }
+
+            return new THREE.Mesh(geometry, materials);
+        }
+
+        // Fallback: single material path.
+        let usdMaterial = null;
+        if (!options.overrideMaterial) {
+            if (mesh.materialId !== undefined && mesh.materialId >= 0) {
+                usdMaterial = usdScene.getMaterial(mesh.materialId);
+            }
+        }
+
+        let mtl = null;
+        if (options.overrideMaterial) {
+            mtl = defaultMtl || normalMtl;
+        } else {
+            mtl = makeMaterial(usdMaterial);
 
             // Sideness is determined by the mesh
             if (Object.prototype.hasOwnProperty.call(geometry.userData, 'doubleSided')) {
-              if (geometry.userData.doubleSided) {
-                 
-                usdMaterial.side = THREE.DoubleSide;
-                pbrMaterial.side = THREE.DoubleSide;
-              }
-            } 
-
-            mtl = pbrMaterial || defaultMtl || normalMtl;
+                if (geometry.userData.doubleSided) {
+                    mtl.side = THREE.DoubleSide;
+                }
+            }
         }
 
-        const threeMesh = new THREE.Mesh(geometry, mtl);
-
-        return threeMesh;
+        return new THREE.Mesh(geometry, mtl);
     }
 
 
