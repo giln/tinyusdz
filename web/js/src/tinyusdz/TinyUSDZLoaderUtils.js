@@ -307,18 +307,25 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
             });
         }
 
-        // Opacity
+        // Opacity: honor opacity and threshold; prefer cutout via alphaTest.
         material.opacity = 1.0;
+        material.transparent = false;
+        material.alphaMap = null;
+        material.alphaTest = 0.0;
         if (Object.prototype.hasOwnProperty.call(usdMaterial, 'opacity')) {
             material.opacity = usdMaterial.opacity;
-            if (material.opacity < 1.0) {
+            if (material.opacity < 0.999) {
                 material.transparent = true;
             }
         }
         if (Object.prototype.hasOwnProperty.call(usdMaterial, 'opacityTextureId')) {
             this.getTextureFromUSD(usdScene, usdMaterial.opacityTextureId).then((texture) => {
                 material.alphaMap = texture;
-                material.transparent = true;
+                const threshold = Object.prototype.hasOwnProperty.call(usdMaterial, 'opacityThreshold')
+                    ? usdMaterial.opacityThreshold
+                    : 0.1;
+                material.alphaTest = threshold;
+                material.transparent = material.opacity < 0.999;
                 material.needsUpdate = true;
             }).catch((err) => {
                 console.error("failed to load opacity texture", err);
