@@ -8,6 +8,30 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         super();
     }
 
+    static applyTextureTransform(texture, usdTex) {
+        if (!usdTex || !texture) return texture;
+
+        const wrapMap = {
+            'repeat': THREE.RepeatWrapping,
+            'mirror': THREE.MirroredRepeatWrapping,
+            'clampToEdge': THREE.ClampToEdgeWrapping,
+            'clamp': THREE.ClampToEdgeWrapping,
+            'clampToBorder': THREE.ClampToEdgeWrapping
+        };
+        texture.wrapS = wrapMap[usdTex.wrapS] || THREE.RepeatWrapping;
+        texture.wrapT = wrapMap[usdTex.wrapT] || THREE.RepeatWrapping;
+
+        if (usdTex.hasTransform2d || usdTex.has_transform2d) {
+            const scale = usdTex.txScale || usdTex.tx_scale || [1, 1];
+            const trans = usdTex.txTranslation || usdTex.tx_translation || [0, 0];
+            texture.repeat.set(scale[0], scale[1]);
+            texture.offset.set(trans[0], trans[1]);
+        }
+
+        texture.needsUpdate = true;
+        return texture;
+    }
+
     static async getDataFromURI(uri) {
         try {
             const response = await fetch(url);
@@ -129,7 +153,7 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
 
             //console.log("Loading texture from URI:", texImage.uri);
             // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
-            return loader.loadAsync(texImage.uri);
+            return loader.loadAsync(texImage.uri).then((t) => this.applyTextureTransform(t, tex));
 
         } else if (texImage.bufferId >= 0 && texImage.data) {
             //console.log("case 2 or 3");
@@ -154,7 +178,7 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
                 texture.flipY = true;
                 texture.needsUpdate = true;
 
-                return Promise.resolve(texture);
+                return Promise.resolve(this.applyTextureTransform(texture, tex));
 
             } else {
                 //console.log("case 3");
@@ -166,7 +190,7 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
 
                     //console.log("blobUrl", blobUrl);
                     // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
-                    return loader.loadAsync(blobUrl);
+                    return loader.loadAsync(blobUrl).then((t) => this.applyTextureTransform(t, tex));
                 } catch (error) {
                     console.error("Failed to create Blob from texture data:", error);
                     return Promise.reject(new Error("Failed to create Blob from texture data"));

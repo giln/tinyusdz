@@ -730,6 +730,14 @@ class TinyUSDZLoaderNative {
     tex.set("textureImageId", int(t.texture_image_id));
     tex.set("wrapS", to_string(t.wrapS));
     tex.set("wrapT", to_string(t.wrapT));
+    tex.set("hasTransform2d", t.has_transform2d);
+    tex.set("txRotation", t.tx_rotation);
+    tex.set("txScale", emscripten::val::array());
+    tex["txScale"].call<void>("push", t.tx_scale[0]);
+    tex["txScale"].call<void>("push", t.tx_scale[1]);
+    tex.set("txTranslation", emscripten::val::array());
+    tex["txTranslation"].call<void>("push", t.tx_translation[0]);
+    tex["txTranslation"].call<void>("push", t.tx_translation[1]);
     //  TOOD: bias, scale, rot/scale/trans, etc
 
     return tex;
