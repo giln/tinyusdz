@@ -344,7 +344,7 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         }
         if (Object.prototype.hasOwnProperty.call(usdMaterial, 'opacityTextureId')) {
             this.getTextureFromUSD(usdScene, usdMaterial.opacityTextureId).then((texture) => {
-                material.alphaMap = texture;
+                //material.alphaMap = texture;
                 const threshold = Object.prototype.hasOwnProperty.call(usdMaterial, 'opacityThreshold')
                     ? usdMaterial.opacityThreshold
                     : 0.1;
