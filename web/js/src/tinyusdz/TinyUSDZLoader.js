@@ -315,6 +315,26 @@ class TinyUSDZLoader extends Loader {
 
 
 
+    getVariantSets() {
+        if (!this.native_) {
+            throw new Error('TinyUSDZLoader: Native module is not initialized.');
+        }
+        if (typeof this.native_.getVariantSets !== 'function') {
+            return [];
+        }
+        return this.native_.getVariantSets();
+    }
+
+    setVariantSelection(primPath, setName, variantName) {
+        if (!this.native_) {
+            throw new Error('TinyUSDZLoader: Native module is not initialized.');
+        }
+        if (typeof this.native_.setVariantSelection !== 'function') {
+            return false;
+        }
+        return this.native_.setVariantSelection(primPath, setName, variantName);
+    }
+
 }
 
 export { TinyUSDZLoader, FetchAssetResolver };

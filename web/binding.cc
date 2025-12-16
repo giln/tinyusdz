@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <set>
 #include <chrono>
 #include <thread>
 
@@ -383,6 +384,24 @@ class TinyUSDZLoaderNative {
 
     loaded_as_layer_ = false;
     filename_ = filename;
+
+    // Also keep a Layer copy for variant inspection.
+    tinyusdz::Layer tmpLayer;
+    if (is_usdz) {
+      tinyusdz::LoadUSDZLayerFromMemory(
+          reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
+          filename, &tmpLayer, &warn_, &error_);
+    } else {
+      tinyusdz::LoadLayerFromMemory(
+          reinterpret_cast<const uint8_t *>(binary.c_str()), binary.size(),
+          filename, &tmpLayer, &warn_, &error_);
+    }
+
+    if (tmpLayer.primspecs().size()) {
+      layer_ = std::move(tmpLayer);
+      loaded_as_layer_ = true;
+      composited_ = false;
+    }
 
 #if 0
     tinyusdz::tydra::RenderSceneConverterEnv env(stage);
@@ -1084,13 +1103,97 @@ class TinyUSDZLoaderNative {
     return tinyusdz::HasVariants(composited_ ? composed_layer_ : layer_ );
   }
 
-  bool composeVariants() {
+  emscripten::val getVariantSets() {
 
-    if (composited_) {
-      layer_ = std::move(composed_layer_);
+    emscripten::val arr = emscripten::val::array();
+
+    const bool haveLayer = loaded_as_layer_ && (layer_.primspecs().size() > 0);
+    const tinyusdz::Layer &active_layer = (composited_ && haveLayer) ? composed_layer_ : layer_;
+
+    size_t idx = 0;
+    for (const auto &psEntry : active_layer.primspecs()) {
+      const std::string primPathStr = psEntry.first;
+      const auto &ps = psEntry.second;
+
+      std::set<std::string> setNames;
+      if (ps.metas().variantSets) {
+        const auto &vsmeta = ps.metas().variantSets.value().second;
+        setNames.insert(vsmeta.begin(), vsmeta.end());
+      }
+      for (const auto &kv : ps.variantSets()) {
+        setNames.insert(kv.first);
+      }
+      if (setNames.empty()) {
+        continue;
+      }
+
+      for (const auto &setName : setNames) {
+        std::vector<std::string> variants;
+        auto vIt = ps.variantSets().find(setName);
+        if (vIt != ps.variantSets().end()) {
+          for (const auto &kv : vIt->second.variantSet) {
+            variants.push_back(kv.first);
+          }
+        }
+
+        emscripten::val obj = emscripten::val::object();
+        obj.set("primPath", primPathStr);
+        obj.set("setName", setName);
+
+        emscripten::val varArr = emscripten::val::array();
+        for (size_t i = 0; i < variants.size(); i++) {
+          varArr.set(i, variants[i]);
+        }
+        obj.set("variants", varArr);
+
+        std::string selected;
+        if (ps.metas().variants) {
+          auto it = ps.metas().variants.value().find(setName);
+          if (it != ps.metas().variants.value().end()) {
+            selected = it->second;
+          }
+        }
+        if (selected.empty()) {
+          const_cast<tinyusdz::PrimSpec&>(ps).current_variant_selection(setName, &selected);
+        }
+        obj.set("selected", selected);
+
+        arr.set(idx++, obj);
+      }
     }
 
-    if (!tinyusdz::CompositeVariant( layer_, &composed_layer_, &warn_, &error_)) {
+    return arr;
+  }
+
+  bool setVariantSelection(const std::string &primPath,
+                           const std::string &setName,
+                           const std::string &variantName) {
+    if (!loaded_as_layer_) {
+      return false;
+    }
+
+    tinyusdz::Path p(primPath, "");
+    const tinyusdz::PrimSpec *ps{nullptr};
+    std::string err;
+    if (!layer_.find_primspec_at(p, &ps, &err) && composited_) {
+      layer_ = composed_layer_;
+      composited_ = false;
+      if (!layer_.find_primspec_at(p, &ps, &err)) {
+        return false;
+      }
+    } else if (!ps) {
+      return false;
+    }
+
+    tinyusdz::PrimSpec *mutable_ps = const_cast<tinyusdz::PrimSpec *>(ps);
+    return mutable_ps->select_variant(setName, variantName);
+  }
+
+  bool composeVariants() {
+
+    tinyusdz::Layer working_layer = composited_ ? composed_layer_ : layer_;
+
+    if (!tinyusdz::CompositeVariant( working_layer, &composed_layer_, &warn_, &error_)) {
       std::cerr << "Failed to composite variant: \n";
       if (composited_) {
         // make 'layer_' and 'composed_layer_' invalid
@@ -1100,6 +1203,7 @@ class TinyUSDZLoaderNative {
       return false;
     }
 
+    layer_ = working_layer;
     composited_ = true;
 
     return true;
@@ -1487,12 +1591,16 @@ EMSCRIPTEN_BINDINGS(tinyusdz_module) {
       .function("composeInherits",
                 &TinyUSDZLoaderNative::composeInherits)
 
-      // TODO: nested variants
       .function("hasVariants",
-                &TinyUSDZLoaderNative::hasInherits)
+                &TinyUSDZLoaderNative::hasVariants)
 
       .function("composeVariants",
                 &TinyUSDZLoaderNative::composeVariants)
+
+      .function("getVariantSets",
+                &TinyUSDZLoaderNative::getVariantSets)
+      .function("setVariantSelection",
+                &TinyUSDZLoaderNative::setVariantSelection)
 
       .function("layerToRenderScene",
                 &TinyUSDZLoaderNative::layerToRenderScene)
