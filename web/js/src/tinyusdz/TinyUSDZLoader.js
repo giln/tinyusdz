@@ -58,6 +58,7 @@ class TinyUSDZLoader extends Loader {
         super(manager);
 
         this.native_ = null;
+        this.variantSelections_ = new Map();
 
         this.assetResolver_ = null;
 
@@ -225,7 +226,51 @@ class TinyUSDZLoader extends Loader {
         }
 
         const usd = new this.native_.TinyUSDZLoaderNative();
+        if (typeof usd.setEnableComposition === 'function') {
+            usd.setEnableComposition(true);
+        }
 
+        // If we have variant selections, load as layer and apply them before rendering.
+        if (this.variantSelections_.size > 0) {
+            const okLayer = usd.loadAsLayerFromBinary(binary, filePath);
+            if (!okLayer) {
+                _onError(new Error('TinyUSDZLoader: Failed to load USD as Layer from binary data.', { cause: usd.error() }));
+                return;
+            }
+
+            for (const [_, { primPath, setName, variantName }] of this.variantSelections_) {
+                if (typeof usd.setVariantSelection === 'function') {
+                    usd.setVariantSelection(primPath, setName, variantName);
+                }
+            }
+
+            if (typeof usd.composeSublayers === 'function') {
+                usd.composeSublayers();
+            }
+            if (typeof usd.composeReferences === 'function') {
+                usd.composeReferences();
+            }
+            if (typeof usd.composePayload === 'function') {
+                usd.composePayload();
+            }
+            if (typeof usd.composeInherits === 'function') {
+                usd.composeInherits();
+            }
+            if (typeof usd.hasVariants === 'function' && usd.hasVariants()) {
+                usd.composeVariants();
+            }
+
+            const okRender = usd.layerToRenderScene();
+            if (!okRender) {
+                _onError(new Error('TinyUSDZLoader: Failed to convert layer to render scene.', { cause: usd.error() }));
+                return;
+            }
+
+            onLoad(usd);
+            return;
+        }
+
+        // Default path: load as stage.
         const ok = usd.loadFromBinary(binary, filePath);
         if (!ok) {
             _onError(new Error('TinyUSDZLoader: Failed to load USD from binary data.', {cause: usd.error()}));
@@ -326,13 +371,9 @@ class TinyUSDZLoader extends Loader {
     }
 
     setVariantSelection(primPath, setName, variantName) {
-        if (!this.native_) {
-            throw new Error('TinyUSDZLoader: Native module is not initialized.');
-        }
-        if (typeof this.native_.setVariantSelection !== 'function') {
-            return false;
-        }
-        return this.native_.setVariantSelection(primPath, setName, variantName);
+        // Cache requested selections; applied during parse().
+        this.variantSelections_.set(`${primPath}::${setName}`, { primPath, setName, variantName });
+        return true;
     }
 
 }
