@@ -8,6 +8,13 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         super();
     }
 
+    // Basic texture caching:
+    // - base cache dedupes decode/fetch per image source (URI/blob/decoded)
+    // - transformed cache dedupes per sampling parameters (wrap/scale/offset/colorspace)
+    static _baseTexturePromiseCache = new Map(); // baseKey -> Promise<THREE.Texture>
+    static _texturePromiseCache = new Map(); // fullKey -> Promise<THREE.Texture>
+    static _blobUrlCache = new Map(); // baseKey -> objectURL string
+
     static applyTextureTransform(texture, usdTex) {
         if (!usdTex || !texture) return texture;
 
@@ -30,6 +37,17 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
 
         texture.needsUpdate = true;
         return texture;
+    }
+
+    static _getTextureTransformKey(usdTex) {
+        if (!usdTex) return '';
+        const wrapS = usdTex.wrapS ?? '';
+        const wrapT = usdTex.wrapT ?? '';
+        const hasTx = !!(usdTex.hasTransform2d || usdTex.has_transform2d);
+        const scale = usdTex.txScale || usdTex.tx_scale || [1, 1];
+        const trans = usdTex.txTranslation || usdTex.tx_translation || [0, 0];
+        const cs = usdTex.sourceColorSpace || usdTex.source_color_space || '';
+        return `${wrapS}|${wrapT}|tx:${hasTx ? '1' : '0'}|s:${scale[0]},${scale[1]}|t:${trans[0]},${trans[1]}|cs:${cs}`;
     }
 
     static async getDataFromURI(uri) {
@@ -135,72 +153,88 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
     static async getTextureFromUSD(usdScene, textureId) {
         if (textureId === undefined) return Promise.reject(new Error("textureId undefined"));
 
+        const usdTex = usdScene.getTexture(textureId);
+        const texImage = usdScene.getImage(usdTex.textureImageId);
 
-        const tex = usdScene.getTexture(textureId);
+        const transformKey = this._getTextureTransformKey(usdTex);
+        const makeTransformed = (baseKey, basePromise) => {
+            const fullKey = `${baseKey}|${transformKey}`;
+            if (this._texturePromiseCache.has(fullKey)) {
+                return this._texturePromiseCache.get(fullKey);
+            }
+            const promise = basePromise.then((base) => {
+                const t = base.clone();
+                return this.applyTextureTransform(t, usdTex);
+            });
+            this._texturePromiseCache.set(fullKey, promise);
+            return promise;
+        };
 
-        const texImage = usdScene.getImage(tex.textureImageId);
-        //console.log("Loading texture from URI:", texImage);
-
-        // there are 3 states for texture:
+        // There are 3 states for texture:
         // 1. URI only. Need to fetch texture(file) from URI in JS layer.
         // 2. Texture is loaded from USDZ file, but not yet decoded(Use Three.js or JS library to decode)
         // 3. Texture is decoded and ready to use in Three.js.
 
         if (texImage.uri && (texImage.bufferId == -1)) {
             // Case 1: URI only
-
-            const loader = new THREE.TextureLoader();
-
-            //console.log("Loading texture from URI:", texImage.uri);
-            // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
-            return loader.loadAsync(texImage.uri).then((t) => this.applyTextureTransform(t, tex));
+            const baseKey = `uri:${texImage.uri}`;
+            if (!this._baseTexturePromiseCache.has(baseKey)) {
+                const loader = new THREE.TextureLoader();
+                // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
+                this._baseTexturePromiseCache.set(baseKey, loader.loadAsync(texImage.uri));
+            }
+            return makeTransformed(baseKey, this._baseTexturePromiseCache.get(baseKey));
 
         } else if (texImage.bufferId >= 0 && texImage.data) {
-            //console.log("case 2 or 3");
 
             if (texImage.decoded) {
-                //console.log("case 3");
-
-                const image8Array = new Uint8ClampedArray(texImage.data);
-                const texture = new THREE.DataTexture(image8Array, texImage.width, texImage.height);
-                if (texImage.channels == 1) {
-                    texture.format = THREE.RedFormat;
-                } else if (texImage.channels == 2) {
-                    texture.format = THREE.RGFormat;
-                } else if (texImage.channels == 3) {
-                    // Recent three.js does not support RGBFormat.
-                    return Promise.reject(new Error("RGB image is not supported"));
-                } else if (texImage.channels == 4) {
-                    texture.format = THREE.RGBAFormat;
-                } else {
-                    return Promise.reject(new Error("Unsupported image channels: " + texImage.channels));
+                // Case 3: already decoded, build DataTexture (deduped)
+                const baseKey = `decoded:${usdTex.textureImageId}`;
+                if (!this._baseTexturePromiseCache.has(baseKey)) {
+                    this._baseTexturePromiseCache.set(baseKey, Promise.resolve().then(() => {
+                        const image8Array = new Uint8ClampedArray(texImage.data);
+                        const texture = new THREE.DataTexture(image8Array, texImage.width, texImage.height);
+                        if (texImage.channels == 1) {
+                            texture.format = THREE.RedFormat;
+                        } else if (texImage.channels == 2) {
+                            texture.format = THREE.RGFormat;
+                        } else if (texImage.channels == 3) {
+                            throw new Error("RGB image is not supported");
+                        } else if (texImage.channels == 4) {
+                            texture.format = THREE.RGBAFormat;
+                        } else {
+                            throw new Error("Unsupported image channels: " + texImage.channels);
+                        }
+                        texture.flipY = true;
+                        texture.needsUpdate = true;
+                        return texture;
+                    }));
                 }
-                texture.flipY = true;
-                texture.needsUpdate = true;
-
-                return Promise.resolve(this.applyTextureTransform(texture, tex));
+                return makeTransformed(baseKey, this._baseTexturePromiseCache.get(baseKey));
 
             } else {
-                //console.log("case 3");
-                try {
-                    const blob = new Blob([texImage.data], { type: this.getMimeType(texImage) });
-                    const blobUrl = URL.createObjectURL(blob);
+                // Case 2: binary exists, decode via TextureLoader from a cached object URL.
+                const baseKey = `blob:${usdTex.textureImageId}:${texImage.bufferId}`;
+                if (!this._baseTexturePromiseCache.has(baseKey)) {
+                    try {
+                        const blob = new Blob([texImage.data], { type: this.getMimeType(texImage) });
+                        const blobUrl = URL.createObjectURL(blob);
+                        this._blobUrlCache.set(baseKey, blobUrl);
 
-                    const loader = new THREE.TextureLoader();
-
-                    //console.log("blobUrl", blobUrl);
-                    // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
-                    return loader.loadAsync(blobUrl).then((t) => this.applyTextureTransform(t, tex));
-                } catch (error) {
-                    console.error("Failed to create Blob from texture data:", error);
-                    return Promise.reject(new Error("Failed to create Blob from texture data"));
+                        const loader = new THREE.TextureLoader();
+                        // TODO: Use HDR/EXR loader if a uri is HDR/EXR file.
+                        this._baseTexturePromiseCache.set(baseKey, loader.loadAsync(blobUrl));
+                    } catch (error) {
+                        console.error("Failed to create Blob from texture data:", error);
+                        return Promise.reject(new Error("Failed to create Blob from texture data"));
+                    }
                 }
+                return makeTransformed(baseKey, this._baseTexturePromiseCache.get(baseKey));
             }
 
-        } else {
-            //console.log("case 3");
-            return Promise.reject(new Error("Invalid USD texture info"));
         }
+
+        return Promise.reject(new Error("Invalid USD texture info"));
     }
 
     static createDefaultMaterial() {
@@ -231,7 +265,6 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
     // - [x] displacement -> displacementMap
     static convertUsdMaterialToMeshPhysicalMaterial(usdMaterial, usdScene) {
         const material = new THREE.MeshPhysicalMaterial();
-        const loader = new THREE.TextureLoader();
 
         // Diffuse color and texture
         material.color = new THREE.Color(0.18, 0.18, 0.18);
@@ -585,6 +618,19 @@ class TinyUSDZLoaderUtils extends LoaderUtils {
         }
 
         return node;
+    }
+
+    static disposeTextureCaches() {
+        for (const blobUrl of this._blobUrlCache.values()) {
+            try {
+                URL.revokeObjectURL(blobUrl);
+            } catch (_) {
+                // ignore
+            }
+        }
+        this._blobUrlCache.clear();
+        this._baseTexturePromiseCache.clear();
+        this._texturePromiseCache.clear();
     }
 
 }
