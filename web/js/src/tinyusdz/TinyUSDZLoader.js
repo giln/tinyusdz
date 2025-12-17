@@ -1,3 +1,4 @@
+// Modified by 5DPlan: viewer integration (variants + composition helpers).
 import { Loader } from 'three'; // or https://cdn.jsdelivr.net/npm/three/build/three.module.js';
 
 // WASM module of TinyUSDZ.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache 2.0
 // Copyright 2022 - 2023, Syoyo Fujita.
 // Copyright 2023 - Present, Light Transport Entertainment Inc.
+// Modified by 5DPlan: tolerate missing surface shader connections in some variant cases.
 //
 // TODO:
 //   - [ ] Subdivision surface to polygon mesh conversion.

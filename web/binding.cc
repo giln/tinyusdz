@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache 2.0
 // Copyright 2024-Present Light Transport Entertainment, Inc.
+// Modified by 5DPlan: added variant-set inspection helpers for the web viewer.
 //
 #include <emscripten/bind.h>
 #include <emscripten/console.h>
